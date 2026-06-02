@@ -175,7 +175,7 @@ async def analyze(request: Request, payload: AnalyzeRequest):
     if not intent_mode:
         raise HTTPException(status_code=422, detail="Intent mode must be selected.")
 
-    now = datetime(2026, 5, 17, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
     cache_key = (query, intent_mode)
     
     cached = SEARCH_CACHE.get(cache_key)
@@ -271,15 +271,66 @@ CRITICAL QUERY SYNTAX RULES BASED ON INTENT_MODE:
     }
     
     async def fetch_subreddit(subreddit: str):
+        # Using RSS Feeds to completely bypass Reddit's unauthenticated .json block
         if subreddit == "all":
-            url = f"https://www.reddit.com/search.json?q={encoded_search}&limit={limit_param}&sort={sort_param}&t={t_param}"
+            url = f"https://www.reddit.com/search.rss?q={encoded_search}&limit={limit_param}&sort={sort_param}&t={t_param}"
         else:
-            url = f"https://www.reddit.com/r/{subreddit}/search.json?q={encoded_search}&restrict_sr=1&limit={limit_param}&sort={sort_param}&t={t_param}"
+            url = f"https://www.reddit.com/r/{subreddit}/search.rss?q={encoded_search}&restrict_sr=on&limit={limit_param}&sort={sort_param}&t={t_param}"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        }
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(url, headers=headers, timeout=10.0)
-                response.raise_for_status()
-                return response.json()
+                resp = await client.get(url, headers=headers, timeout=10.0)
+                if resp.status_code != 200:
+                    return None
+                
+                import xml.etree.ElementTree as ET
+                root = ET.fromstring(resp.text)
+                ns = {'atom': 'http://www.w3.org/2005/Atom'}
+                entries = root.findall('atom:entry', ns)
+                
+                mock_children = []
+                for entry in entries:
+                    title = entry.find('atom:title', ns).text or ""
+                    link = entry.find('atom:link', ns).attrib['href']
+                    updated_str = entry.find('atom:updated', ns).text
+                    
+                    # Parse timestamp (e.g., '2026-06-02T10:16:45+00:00')
+                    try:
+                        dt = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+                    except:
+                        dt = now
+                        
+                    content_elem = entry.find('atom:content', ns)
+                    content_html = content_elem.text if content_elem is not None else ""
+                    import re
+                    snippet = re.sub(r'<[^>]+>', '', content_html).strip()
+                    
+                    author_elem = entry.find('atom:author/atom:name', ns)
+                    author = author_elem.text if author_elem is not None else "[deleted]"
+                    author = author.replace("/u/", "")
+                    
+                    # Parse post ID from link to prevent duplicates
+                    # Link looks like: https://www.reddit.com/r/forhire/comments/1abcde/title/
+                    id_match = re.search(r'/comments/([^/]+)/', link)
+                    post_id = id_match.group(1) if id_match else link
+                    
+                    mock_post = {
+                        "data": {
+                            "id": post_id,
+                            "title": title,
+                            "selftext": snippet,
+                            "subreddit_name_prefixed": f"r/{subreddit}" if subreddit != "all" else "r/all",
+                            "created_utc": dt.timestamp(),
+                            "permalink": link.replace("https://www.reddit.com", ""),
+                            "author": author
+                        }
+                    }
+                    mock_children.append(mock_post)
+                    
+                return {"data": {"children": mock_children}}
         except Exception:
             return None
 
@@ -315,37 +366,25 @@ CRITICAL QUERY SYNTAX RULES BASED ON INTENT_MODE:
                 if "for hire" in title.lower():
                     continue
                     
-            # Post-Fetch Semantic Validation for General Search (exclude mechanical false positives & mismatch noise)
+            # Post-Fetch Semantic Validation for General Search (lightweight relevance gate)
             if intent_mode == 'general_search':
                 selftext = post.get("selftext", "")
                 full_text_lower = f"{title} {selftext}".lower()
                 
-                # Check for mechanical stop-words on physical/health queries
+                # Only hard-filter on obvious mechanical stop-words for health/pain queries
                 query_lower = query.lower()
-                pain_keywords = ["pain", "joint", "sore", "ache", "neuropathy", "stiffness", "injury", "knees", "backache", "arthritis", "disease", "illness", "condition", "symptom", "balm"]
+                pain_keywords = ["pain", "joint", "sore", "ache", "neuropathy", "stiffness", "injury", "knees", "backache", "arthritis"]
                 if any(k in query_lower for k in pain_keywords):
-                    stop_words = ['chair', 'headphone', 'trimmer', 'razor', 'shaver', 'mechanical', 'bank', 'tariff', 'tariffs', 'session', 'jointly', 'parliament', 'committee', 'ex-wife', 'ex-husband', 'account', 'split']
+                    stop_words = ['chair', 'headphone', 'trimmer', 'razor', 'shaver', 'mechanical', 'bank', 'tariff', 'parliament', 'committee']
                     if any(w in full_text_lower for w in stop_words):
                         continue
                 
-                # Semantic Title Filter Guardrail: Body parts + Pain symptoms check
+                # Soft relevance check: skip only if ZERO query tokens found in title
                 query_tokens = [t.lower() for t in _normalize_query_text(query).split() if len(t) > 2]
                 if query_tokens:
-                    if "pain" in query_tokens or "joint" in query_tokens:
-                        body_parts = ["joint", "joints", "knee", "knees", "back", "hip", "hips", "shoulder", "shoulders", "neck", "elbow", "elbows", "muscle", "muscles", "wrist", "wrists", "finger", "fingers", "hand", "hands", "foot", "feet", "body", "physical", "bones", "abdominal", "pelvic", "chest", "chronic"]
-                        symptom_descriptors = ["pain", "ache", "aches", "stiffness", "sore", "thritis", "arthritis", "hurt", "swelling", "inflammation", "aching", "stiff", "injury", "injuries", "disease", "illness", "condition", "symptom", "symptoms", "neuropathy", "balm"]
-                        
-                        has_body = any(b in full_text_lower for b in body_parts)
-                        has_symptom = any(s in full_text_lower for s in symptom_descriptors)
-                        if not (has_body and has_symptom):
-                            continue
-                    elif "babysitter" in query_tokens or "nanny" in query_tokens:
-                        query_tokens.extend(["babysitting", "childcare", "sitter", "kids", "care"])
-                        if not any(token in full_text_lower for token in query_tokens):
-                            continue
-                    else:
-                        if not any(token in full_text_lower for token in query_tokens):
-                            continue
+                    title_lower = title.lower()
+                    if not any(token in title_lower for token in query_tokens):
+                        continue
                         
             seen_ids.add(post_id)
             selftext = post.get("selftext", "")
