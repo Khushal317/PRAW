@@ -184,13 +184,13 @@ async def analyze(request: Request, payload: AnalyzeRequest):
         if (now - cached_time) < timedelta(minutes=15):
             return JSONResponse(content=cached_data)
 
-    nvidia_api_key = os.getenv("NVIDIA_API_KEY", "MISSING_NVIDIA_API_KEY")
+    groq_api_key = os.getenv("GROQ_API_KEY", "MISSING_GROQ_API_KEY")
 
     # ─── 1. Stage 1 LLM Query Optimizer & Subreddit Router ───────────────────
     target_subreddits = []
     search_string = ""
     
-    if nvidia_api_key != "MISSING_NVIDIA_API_KEY":
+    if groq_api_key != "MISSING_GROQ_API_KEY":
         stage_1_prompt = f"""You are a Reddit Search API Query Expert. Output a strict, raw JSON object ONLY: {{"reddit_query": "...", "target_subreddits": ["...", "...", "..."]}}. No conversational filler, no markdown wrappers.
 
 CRITICAL QUERY SYNTAX RULES BASED ON INTENT_MODE:
@@ -214,7 +214,7 @@ CRITICAL QUERY SYNTAX RULES BASED ON INTENT_MODE:
         user_message_s1 = json.dumps({"query": query, "intent_mode": intent_mode})
         
         payload_s1 = {
-            "model": "meta/llama-3-nemotron-70b-instruct",
+            "model": "llama3-70b-8192",
             "messages": [
                 {"role": "system", "content": stage_1_prompt},
                 {"role": "user", "content": user_message_s1}
@@ -226,8 +226,8 @@ CRITICAL QUERY SYNTAX RULES BASED ON INTENT_MODE:
         try:
             async with httpx.AsyncClient() as client:
                 resp_s1 = await client.post(
-                    "https://integrate.api.nvidia.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {nvidia_api_key}", "Content-Type": "application/json"},
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
                     json=payload_s1,
                     timeout=10.0
                 )
@@ -396,7 +396,7 @@ CRITICAL QUERY SYNTAX RULES BASED ON INTENT_MODE:
     lead_feed.sort(key=lambda x: x["created_utc"], reverse=True)
 
     # ─── 3. Stage 3 LLM (Only qualitative summaries) ──────────────────────────
-    if nvidia_api_key != "MISSING_NVIDIA_API_KEY" and raw_posts:
+    if groq_api_key != "MISSING_GROQ_API_KEY" and raw_posts:
         subset = raw_posts[:50]
         stage_3_prompt = """Analyze this Reddit dataset for the provided query and intent.
 Return a strictly minified JSON structure containing:
@@ -417,7 +417,7 @@ Write concise, bulleted semantic syntheses explaining shifts for each year. Max 
         })
 
         payload_s3 = {
-            "model": "meta/llama-3-nemotron-70b-instruct",
+            "model": "llama3-70b-8192",
             "messages": [
                 {"role": "system", "content": stage_3_prompt},
                 {"role": "user", "content": user_message_s3}
@@ -429,8 +429,8 @@ Write concise, bulleted semantic syntheses explaining shifts for each year. Max 
         try:
             async with httpx.AsyncClient() as client:
                 resp_s3 = await client.post(
-                    "https://integrate.api.nvidia.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {nvidia_api_key}", "Content-Type": "application/json"},
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
                     json=payload_s3,
                     timeout=20.0
                 )
