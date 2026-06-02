@@ -214,7 +214,7 @@ CRITICAL QUERY SYNTAX RULES BASED ON INTENT_MODE:
         user_message_s1 = json.dumps({"query": query, "intent_mode": intent_mode})
         
         payload_s1 = {
-            "model": "llama3-70b-8192",
+            "model": "llama-3.3-70b-versatile",
             "messages": [
                 {"role": "system", "content": stage_1_prompt},
                 {"role": "user", "content": user_message_s1}
@@ -417,7 +417,7 @@ Write concise, bulleted semantic syntheses explaining shifts for each year. Max 
         })
 
         payload_s3 = {
-            "model": "llama3-70b-8192",
+            "model": "llama-3.3-70b-versatile",
             "messages": [
                 {"role": "system", "content": stage_3_prompt},
                 {"role": "user", "content": user_message_s3}
